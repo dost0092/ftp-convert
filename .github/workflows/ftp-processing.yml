@@ -21,7 +21,8 @@ jobs:
     - name: Install Python dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install requests openpyxl pandas tqdm ftplib
+        pip install requests openpyxl pandas tqdm
+        # ftplib is part of Python standard library - no need to install
 
     - name: Create environment file
       run: |
@@ -176,6 +177,12 @@ jobs:
                 print('Archiving existing output files...')
                 archive_folder = f'/katanaPIM/dropfiles/output_files/processed/output_{timestamp}'
                 
+                # Create archive directory
+                try:
+                    ftps.mkd(archive_folder)
+                except:
+                    pass
+                
                 # Move each item to archive
                 for item in items:
                     try:
@@ -201,7 +208,7 @@ jobs:
         # Copy all input files to current directory for processing
         cp -r input_files/* .
         
-        # Run your conversion script
+        # Run your conversion script (replace with your actual script name)
         python convert.py
         
         # List generated output files
@@ -313,6 +320,12 @@ jobs:
         archive_folder = f'/katanaPIM/dropfiles/input_files/processed/input_{timestamp}'
         
         print('Archiving processed input files...')
+        
+        # Create archive directory
+        try:
+            ftps.mkd(archive_folder)
+        except:
+            pass
         
         # Move all content from input_files to archive (excluding processed folder)
         try:

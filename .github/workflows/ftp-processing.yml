@@ -60,19 +60,19 @@ jobs:
         echo "=== Files in /input_files ==="
         cat current_files.txt
         
-        # Check if there are any NEW input files (not in processed folder)
-        if grep -q -E "^(art.*in|atk.*in|mvm.*in|uic.*in|stc.*in|lev.*in)" current_files.txt; then
+        # Check if there are any processing files (art, atk, mvm, uic, stc, lev)
+        if grep -q -E "(art.*in|atk.*in|mvm.*in|uic.*in|stc.*in|lev.*in)" current_files.txt; then
           echo "new_files=true" >> $GITHUB_OUTPUT
           echo "✅ New files detected - will process"
         else
           echo "new_files=false" >> $GITHUB_OUTPUT
-          echo "❌ No new files found"
+          echo "❌ No processing files found"
         fi
 
-    - name: Download files from FTP
+    - name: Download processing files from FTP
       if: steps.check-files.outputs.new_files == 'true'
       run: |
-        echo "📥 Downloading files from /input_files/..."
+        echo "📥 Downloading processing files from /input_files/..."
         
         # Download only the required processing files
         lftp -c "
@@ -80,18 +80,18 @@ jobs:
           set ssl:verify-certificate no
           open -u $FTP_USER,$FTP_PASS $FTP_HOST
           cd /input_files
-          mget art*in atk*in mvm*in uic*in stc*in lev*in
+          mget art1443in atk1443in mvm1443in uic1443in stc1443in lev1443in
         "
         
         echo "=== Downloaded files ==="
         ls -la *.in
 
-    - name: Archive previous output files to /output_files/processed
+    - name: Archive previous output files
       if: steps.check-files.outputs.new_files == 'true'
       run: |
         TIMESTAMP=$(date -u +"%Y%m%d_%H%M%S")
         
-        # Check if there are existing output files to archive
+        # Check current output files
         lftp -c "
           set ftp:ssl-allow no
           set ssl:verify-certificate no
@@ -100,39 +100,33 @@ jobs:
           ls -la
         " > output_check.txt
         
-        echo "=== Current /output_files contents ==="
+        echo "=== Current /output_files ==="
         cat output_check.txt
         
-        # Check if there are any files/folders (excluding processed folder)
-        if grep -q -v -E "^(drwx|total|processed)" output_check.txt; then
-          echo "📦 Archiving previous output files to /output_files/processed/output_files_${TIMESTAMP}/"
-          
-          # Create processed directory structure
+        # Create processed directory if it doesn't exist
+        lftp -c "
+          set ftp:ssl-allow no
+          set ssl:verify-certificate no
+          open -u $FTP_USER,$FTP_PASS $FTP_HOST
+          cd /output_files
+          mkdir -p processed
+        "
+        
+        # Archive each output folder individually if it exists
+        for folder in in pw bs pm; do
           lftp -c "
             set ftp:ssl-allow no
             set ssl:verify-certificate no
             open -u $FTP_USER,$FTP_PASS $FTP_HOST
             cd /output_files
-            mkdir -p processed
-            cd processed
-            mkdir -p output_files_${TIMESTAMP}
+            mkdir -p processed/output_files_${TIMESTAMP}
+            mv $folder processed/output_files_${TIMESTAMP}/ 2>/dev/null || echo 'Folder $folder not found, skipping'
           "
-          
-          # Move all files and folders from /output_files to archive (except processed folder)
-          lftp -c "
-            set ftp:ssl-allow no
-            set ssl:verify-certificate no
-            open -u $FTP_USER,$FTP_PASS $FTP_HOST
-            cd /output_files
-            glob -a mv * processed/output_files_${TIMESTAMP}/ 
-          " || echo "Some files may already be moved"
-          
-          echo "✅ Previous output files archived to /output_files/processed/output_files_${TIMESTAMP}/"
-        else
-          echo "📭 No previous output files to archive"
-        fi
+        done
+        
+        echo "✅ Previous output files archived to /output_files/processed/output_files_${TIMESTAMP}/"
 
-    - name: Archive input files to /input_files/processed
+    - name: Archive input files
       if: steps.check-files.outputs.new_files == 'true'
       run: |
         TIMESTAMP=$(date -u +"%Y%m%d_%H%M%S")
@@ -150,14 +144,16 @@ jobs:
           mkdir -p input_files_${TIMESTAMP}
         "
         
-        # Move all processing files to archive (keep ART_DOCS folder)
-        lftp -c "
-          set ftp:ssl-allow no
-          set ssl:verify-certificate no
-          open -u $FTP_USER,$FTP_PASS $FTP_HOST
-          cd /input_files
-          glob -a mv art*in atk*in mvm*in uic*in stc*in lev*in processed/input_files_${TIMESTAMP}/ 
-        " || echo "Some files may already be moved"
+        # Move each processing file individually to archive
+        for file in art1443in atk1443in mvm1443in uic1443in stc1443in lev1443in; do
+          lftp -c "
+            set ftp:ssl-allow no
+            set ssl:verify-certificate no
+            open -u $FTP_USER,$FTP_PASS $FTP_HOST
+            cd /input_files
+            mv $file processed/input_files_${TIMESTAMP}/ 2>/dev/null || echo 'File $file not found, skipping'
+          "
+        done
         
         echo "✅ Input files archived to /input_files/processed/input_files_${TIMESTAMP}/"
 
@@ -171,7 +167,7 @@ jobs:
         ls -la *.in
         
         # Run the conversion script (replace with your actual script name)
-        python convert.py
+        python your_script_name.py
         
         echo "✅ Conversion completed successfully"
         
@@ -200,9 +196,6 @@ jobs:
       run: |
         TIMESTAMP=$(date -u +"%Y%m%d_%H%M%S")
         
-        # Get list of processed files for the email
-        PROCESSED_FILES=$(ls *.in 2>/dev/null | tr '\n' ',' | sed 's/,$//' || echo "art1443in, atk1443in, mvm1443in, etc.")
-        
         cat > email_body.txt << EOF
         Subject: 🚀 KatanaPIM Files Export Completed
 
@@ -211,7 +204,7 @@ jobs:
         Your file conversion has been completed successfully!
 
         📊 PROCESSING SUMMARY:
-        • Input files processed: $PROCESSED_FILES
+        • Input files processed: art1443in, atk1443in, mvm1443in, uic1443in, stc1443in, lev1443in
         • Process completed: $(date)
         • Archive timestamp: ${TIMESTAMP}
 
@@ -260,7 +253,7 @@ jobs:
     - name: No new files notification
       if: steps.check-files.outputs.new_files == 'false'
       run: |
-        echo "⏭️ No new files found in /input_files/. Skipping processing."
+        echo "⏭️ No new processing files found in /input_files/. Skipping processing."
         echo "Current /input_files contents:"
         lftp -c "
           set ftp:ssl-allow no

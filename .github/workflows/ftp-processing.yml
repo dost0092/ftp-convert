@@ -28,9 +28,9 @@ jobs:
         cat > .env << EOF
         EMAIL_USER=${{ secrets.EMAIL_USER }}
         EMAIL_APP_PASSWORD=${{ secrets.EMAIL_APP_PASSWORD }}
-        FTP_REMOTE_DIR=/katanaPIM/dropfiles/input_files
-        FTP_UPLOAD_DIR=/katanaPIM/dropfiles/output_files
-        FTP_PROCESSED_DIR=/katanaPIM/dropfiles/processed
+        FTP_REMOTE_DIR=/input_files
+        FTP_UPLOAD_DIR=/output_files
+        FTP_PROCESSED_DIR=/processed
         FTP_HOST=img.leenweb.app
         FTP_USER=${{ secrets.FTP_USER }}
         FTP_PASS=${{ secrets.FTP_PASS }}
@@ -324,7 +324,7 @@ jobs:
                 for item in files_to_archive:
                     try:
                         ftps.rename(
-                            f'/katanaPIM/dropfiles/input_files/{item}',
+                            f'/input_files/{item}',
                             f'{archive_folder}/{item}'
                         )
                         print(f'📦 Archived input file: {item}')
@@ -362,7 +362,7 @@ jobs:
           The file conversion has been completed successfully!
           
           📁 Output files are available at:
-          https://img.leenweb.app/katanaPIM/dropfiles/output_files/
+          https://img.leenweb.app/output_files/
           
           These files will remain available until the next processing run.
           
@@ -392,7 +392,7 @@ jobs:
           Next check will be in 15 minutes.
           
           Current output files remain available at:
-          https://img.leenweb.app/katanaPIM/dropfiles/output_files/
+          https://img.leenweb.app/output_files/
 
     - name: Clean up local files
       if: always()

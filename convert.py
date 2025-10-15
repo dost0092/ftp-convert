@@ -1420,7 +1420,7 @@ def main():
         # Nieuwe naam zonder 0000
         memovelden_json_new = os.path.join(output_dir, f"art{suffix}_GP-memovelden.json")
         if os.path.exists(art_file) and os.path.exists(gp_file):
-            url_prefix = f"https://img.leenweb.app/katanaPIM/dropfiles/output_files/{folder}"
+            url_prefix = f"https://img.leenweb.app/output_files/{folder}"
             email_html += f"""
     <hr>
     <h3 style="font-size: 14px; color: #007aeb;">— {formula.upper()} —</h3>
@@ -1471,7 +1471,7 @@ def main():
     <hr>
     <h3 style="font-size: 14px; color: #007aeb;">— Log bestanden —</h3>
 """
-    log_url = "https://img.leenweb.app/katanaPIM/dropfiles/output_files/logs.zip"
+    log_url = "https://img.leenweb.app/output_files/logs.zip"
     email_html += f'''
       <p>
         <a href="{log_url}" style="display:inline-block;padding:10px 16px;background-color:#007aeb;color:#fff;text-decoration:none;border-radius:5px;">Download log bestanden</a>

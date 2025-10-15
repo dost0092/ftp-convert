@@ -1,7 +1,7 @@
 name: FTP File Processing
 on:
   schedule:
-    - cron: '0 */5 * * *'  # Run every 5 hours
+    - cron: '*/5 * * * *'  # Run every 5 minutes
   workflow_dispatch:  # Allow manual triggering
 
 env:
@@ -38,10 +38,19 @@ jobs:
       run: |
         mkdir -p input_files output_files converted-files
 
+    - name: Create lftp configuration
+      run: |
+        cat > .lftprc << EOF
+        set ftp:ssl-allow no
+        set ssl:verify-certificate no
+        EOF
+
     - name: Check for new files on FTP
       id: check-files
       run: |
         lftp -c "
+          set ftp:ssl-allow no
+          set ssl:verify-certificate no
           open -u $FTP_USER,$FTP_PASS $FTP_HOST
           cd /katanaPIM/dropfiles/input_files
           ls -la
@@ -60,6 +69,8 @@ jobs:
         
         # Download all files from input_files
         lftp -c "
+          set ftp:ssl-allow no
+          set ssl:verify-certificate no
           open -u $FTP_USER,$FTP_PASS $FTP_HOST
           cd /katanaPIM/dropfiles/input_files
           mirror --verbose . ./input_files/
@@ -72,6 +83,8 @@ jobs:
         
         # Check if there are existing output files and archive them
         lftp -c "
+          set ftp:ssl-allow no
+          set ssl:verify-certificate no
           open -u $FTP_USER,$FTP_PASS $FTP_HOST
           cd /katanaPIM/dropfiles/output_files
           
@@ -82,6 +95,8 @@ jobs:
         if grep -q -v "^d" output_check.txt && ! grep -q "total 0" output_check.txt; then
           # Archive existing output files
           lftp -c "
+            set ftp:ssl-allow no
+            set ssl:verify-certificate no
             open -u $FTP_USER,$FTP_PASS $FTP_HOST
             cd /katanaPIM/dropfiles
             mkdir -p output_files/processed/output_files_${TIMESTAMP}
@@ -96,6 +111,8 @@ jobs:
         
         # Archive the input files we just downloaded
         lftp -c "
+          set ftp:ssl-allow no
+          set ssl:verify-certificate no
           open -u $FTP_USER,$FTP_PASS $FTP_HOST
           cd /katanaPIM/dropfiles
           mkdir -p input_files/processed/input_files_${TIMESTAMP}
@@ -109,7 +126,7 @@ jobs:
         cp -r input_files/* . || true
         
         # Run the conversion script
-        python convert.py
+        python your_script_name.py
         
         echo "Conversion completed successfully"
 
@@ -118,6 +135,8 @@ jobs:
       run: |
         # Upload all converted files to output_files directory
         lftp -c "
+          set ftp:ssl-allow no
+          set ssl:verify-certificate no
           open -u $FTP_USER,$FTP_PASS $FTP_HOST
           cd /katanaPIM/dropfiles
           mkdir -p output_files
@@ -128,6 +147,8 @@ jobs:
       if: steps.check-files.outputs.new_files == 'true'
       run: |
         cat > email_body.txt << EOF
+        Subject: Files Exported Successfully
+        
         The files have been exported successfully.
         
         Input files have been processed and moved to:
@@ -142,12 +163,12 @@ jobs:
         The conversion process completed at: $(date)
         EOF
         
-        # Send email using sendmail or curl to SMTP
-        curl --url 'smtps://smtp.gmail.com:465' --ssl-reqd \
-          --mail-from '$EMAIL_USER' \
+        # Send email using curl to Gmail SMTP
+        curl -v --url 'smtps://smtp.gmail.com:465' --ssl-reqd \
+          --mail-from '${{ secrets.EMAIL_USER }}' \
           --mail-rcpt 'sajid.mbp@gmail.com' \
-          --user "$EMAIL_USER:$EMAIL_APP_PASSWORD" \
-          --upload-file email_body.txt
+          --user "${{ secrets.EMAIL_USER }}:${{ secrets.EMAIL_APP_PASSWORD }}" \
+          -T email_body.txt
 
     - name: No new files notification
       if: steps.check-files.outputs.new_files == 'false'

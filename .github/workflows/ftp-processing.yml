@@ -60,7 +60,7 @@ jobs:
         echo "=== Files in /input_files ==="
         cat current_files.txt
         
-        # Check if there are any input files (excluding ART_DOCS folder and processed)
+        # Check if there are any NEW input files (not in processed folder)
         if grep -q -E "^(art.*in|atk.*in|mvm.*in|uic.*in|stc.*in|lev.*in)" current_files.txt; then
           echo "new_files=true" >> $GITHUB_OUTPUT
           echo "✅ New files detected - will process"
@@ -72,9 +72,9 @@ jobs:
     - name: Download files from FTP
       if: steps.check-files.outputs.new_files == 'true'
       run: |
-        echo "📥 Downloading files..."
+        echo "📥 Downloading files from /input_files/..."
         
-        # Download only the required files from /input_files (exclude ART_DOCS)
+        # Download only the required processing files
         lftp -c "
           set ftp:ssl-allow no
           set ssl:verify-certificate no
@@ -100,34 +100,34 @@ jobs:
           ls -la
         " > output_check.txt
         
-        echo "=== Current output files ==="
+        echo "=== Current /output_files contents ==="
         cat output_check.txt
         
-        # Archive existing output files if they exist (excluding processed folder)
-        if grep -q -E "^(in$|bs$|pw$|pm$)" output_check.txt; then
+        # Check if there are any files/folders (excluding processed folder)
+        if grep -q -v -E "^(drwx|total|processed)" output_check.txt; then
           echo "📦 Archiving previous output files to /output_files/processed/output_files_${TIMESTAMP}/"
           
-          # Create archive directory
+          # Create processed directory structure
           lftp -c "
             set ftp:ssl-allow no
             set ssl:verify-certificate no
             open -u $FTP_USER,$FTP_PASS $FTP_HOST
             cd /output_files
-            mkdir -p processed/output_files_${TIMESTAMP}
+            mkdir -p processed
+            cd processed
+            mkdir -p output_files_${TIMESTAMP}
           "
           
-          # Move each folder individually to avoid errors
-          for folder in in bs pw pm; do
-            lftp -c "
-              set ftp:ssl-allow no
-              set ssl:verify-certificate no
-              open -u $FTP_USER,$FTP_PASS $FTP_HOST
-              cd /output_files
-              mv $folder processed/output_files_${TIMESTAMP}/ 2>/dev/null || echo 'Folder $folder not found or already moved'
-            "
-          done
+          # Move all files and folders from /output_files to archive (except processed folder)
+          lftp -c "
+            set ftp:ssl-allow no
+            set ssl:verify-certificate no
+            open -u $FTP_USER,$FTP_PASS $FTP_HOST
+            cd /output_files
+            glob -a mv * processed/output_files_${TIMESTAMP}/ 
+          " || echo "Some files may already be moved"
           
-          echo "✅ Output files archived"
+          echo "✅ Previous output files archived to /output_files/processed/output_files_${TIMESTAMP}/"
         else
           echo "📭 No previous output files to archive"
         fi
@@ -139,27 +139,27 @@ jobs:
         
         echo "📦 Archiving input files to /input_files/processed/input_files_${TIMESTAMP}/"
         
-        # Create archive directory
+        # Create processed directory structure
         lftp -c "
           set ftp:ssl-allow no
           set ssl:verify-certificate no
           open -u $FTP_USER,$FTP_PASS $FTP_HOST
           cd /input_files
-          mkdir -p processed/input_files_${TIMESTAMP}
+          mkdir -p processed
+          cd processed
+          mkdir -p input_files_${TIMESTAMP}
         "
         
-        # Move each file individually to avoid errors with ART_DOCS folder
-        for file in art1443in atk1443in mvm1443in uic1443in stc1443in lev1443in; do
-          lftp -c "
-            set ftp:ssl-allow no
-            set ssl:verify-certificate no
-            open -u $FTP_USER,$FTP_PASS $FTP_HOST
-            cd /input_files
-            mv $file processed/input_files_${TIMESTAMP}/ 2>/dev/null || echo 'File $file not found or already moved'
-          "
-        done
+        # Move all processing files to archive (keep ART_DOCS folder)
+        lftp -c "
+          set ftp:ssl-allow no
+          set ssl:verify-certificate no
+          open -u $FTP_USER,$FTP_PASS $FTP_HOST
+          cd /input_files
+          glob -a mv art*in atk*in mvm*in uic*in stc*in lev*in processed/input_files_${TIMESTAMP}/ 
+        " || echo "Some files may already be moved"
         
-        echo "✅ Input files archived"
+        echo "✅ Input files archived to /input_files/processed/input_files_${TIMESTAMP}/"
 
     - name: Run Python conversion script
       if: steps.check-files.outputs.new_files == 'true'
@@ -171,7 +171,7 @@ jobs:
         ls -la *.in
         
         # Run the conversion script (replace with your actual script name)
-        python convert.py
+        python your_script_name.py
         
         echo "✅ Conversion completed successfully"
         
@@ -193,7 +193,7 @@ jobs:
           mirror -R -v ./converted-files/ /output_files/
         "
         
-        echo "✅ Output files uploaded to FTP"
+        echo "✅ New output files uploaded to /output_files/"
 
     - name: Send completion email
       if: steps.check-files.outputs.new_files == 'true'
@@ -201,10 +201,10 @@ jobs:
         TIMESTAMP=$(date -u +"%Y%m%d_%H%M%S")
         
         # Get list of processed files for the email
-        PROCESSED_FILES=$(ls *.in 2>/dev/null | tr '\n' ',' | sed 's/,$//' || echo "No files found")
+        PROCESSED_FILES=$(ls *.in 2>/dev/null | tr '\n' ',' | sed 's/,$//' || echo "art1443in, atk1443in, mvm1443in, etc.")
         
         cat > email_body.txt << EOF
-        Subject: 🚀 KatanaPIM Export Completed - $TIMESTAMP
+        Subject: 🚀 KatanaPIM Files Export Completed
 
         Hello,
 
@@ -217,21 +217,25 @@ jobs:
 
         📁 FILE LOCATIONS:
 
-        📍 CURRENT OUTPUT FILES (Ready for Import):
-        https://img.leenweb.app/katanaPIM/dropfiles/output_files/
+        📍 CURRENT OUTPUT FILES (Ready for PIM Import):
+        https://img.leenweb.app/output_files/
 
-        📍 ARCHIVED INPUT FILES:
-        /input_files/processed/input_files_${TIMESTAMP}/
+        The following folders are available for import:
+        - https://img.leenweb.app/output_files/in/ (for INHOUSE)
+        - https://img.leenweb.app/output_files/pw/ (for Pronto Wonen) 
+        - https://img.leenweb.app/output_files/bs/ (for Baenks)
+        - https://img.leenweb.app/output_files/pm/ (for Profijt Meubel)
 
-        📍 ARCHIVED PREVIOUS OUTPUT FILES: 
-        /output_files/processed/output_files_${TIMESTAMP}/
+        📍 ARCHIVED FILES:
+        • Input files: /input_files/processed/input_files_${TIMESTAMP}/
+        • Previous outputs: /output_files/processed/output_files_${TIMESTAMP}/
 
         🔗 IMPORT INSTRUCTIONS:
-        1. Access the output files at: https://img.leenweb.app/katanaPIM/dropfiles/output_files/
+        1. Access the output files at the URLs above
         2. Import the XLSX files into your PIM system
-        3. The files will remain available until you upload new input files
+        3. The files will remain available in /output_files/ until you upload new input files
 
-        The output files will remain in /output_files/ until you upload new files to /input_files/.
+        The output files will remain accessible until you upload new files to /input_files/.
 
         Best regards,
         KatanaPIM Automation System
@@ -251,10 +255,18 @@ jobs:
       run: |
         echo "🧹 Cleaning up downloaded files..."
         rm -f *.in || true
-        rm -rf input_files/ || true
+        rm -rf input_files/ converted-files/ || true
 
     - name: No new files notification
       if: steps.check-files.outputs.new_files == 'false'
       run: |
         echo "⏭️ No new files found in /input_files/. Skipping processing."
+        echo "Current /input_files contents:"
+        lftp -c "
+          set ftp:ssl-allow no
+          set ssl:verify-certificate no
+          open -u $FTP_USER,$FTP_PASS $FTP_HOST
+          cd /input_files
+          ls -la
+        " || true
         echo "Next check in 15 minutes..."

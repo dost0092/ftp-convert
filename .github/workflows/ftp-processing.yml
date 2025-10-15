@@ -210,38 +210,38 @@ jobs:
         PROCESSED_FILES=$(ls input_files/ | grep -E "art.*in|atk.*in|mvm.*in|uic.*in|stc.*in" | tr '\n' ',' | sed 's/,$//')
         
         cat > email_body.txt << EOF
-Subject: 🚀 KatanaPIM Export Completed - $TIMESTAMP
+        Subject: 🚀 KatanaPIM Export Completed - $TIMESTAMP
 
-Hello,
+        Hello,
 
-Your file conversion has been completed successfully!
+        Your file conversion has been completed successfully!
 
-📊 PROCESSING SUMMARY:
-• Input files processed: $PROCESSED_FILES
-• Process completed: $(date)
-• Archive timestamp: ${TIMESTAMP}
+        📊 PROCESSING SUMMARY:
+        • Input files processed: $PROCESSED_FILES
+        • Process completed: $(date)
+        • Archive timestamp: ${TIMESTAMP}
 
-📁 FILE LOCATIONS:
+        📁 FILE LOCATIONS:
 
-📍 CURRENT OUTPUT FILES (Ready for Import):
-https://img.leenweb.app/katanaPIM/dropfiles/output_files/
+        📍 CURRENT OUTPUT FILES (Ready for Import):
+        https://img.leenweb.app/katanaPIM/dropfiles/output_files/
 
-📍 ARCHIVED INPUT FILES:
-/input_files/processed/input_files_${TIMESTAMP}/
+        📍 ARCHIVED INPUT FILES:
+        /input_files/processed/input_files_${TIMESTAMP}/
 
-📍 ARCHIVED PREVIOUS OUTPUT FILES: 
-/output_files/processed/output_files_${TIMESTAMP}/
+        📍 ARCHIVED PREVIOUS OUTPUT FILES: 
+        /output_files/processed/output_files_${TIMESTAMP}/
 
-🔗 IMPORT INSTRUCTIONS:
-1. Access the output files at: https://img.leenweb.app/katanaPIM/dropfiles/output_files/
-2. Import the XLSX files into your PIM system
-3. The files will remain available until you upload new input files
+        🔗 IMPORT INSTRUCTIONS:
+        1. Access the output files at: https://img.leenweb.app/katanaPIM/dropfiles/output_files/
+        2. Import the XLSX files into your PIM system
+        3. The files will remain available until you upload new input files
 
-The output files will remain in /output_files/ until you upload new files to /input_files/.
+        The output files will remain in /output_files/ until you upload new files to /input_files/.
 
-Best regards,
-KatanaPIM Automation System
-EOF
+        Best regards,
+        KatanaPIM Automation System
+        EOF
         
         # Send email using curl to Gmail SMTP
         curl -s --url 'smtps://smtp.gmail.com:465' --ssl-reqd \

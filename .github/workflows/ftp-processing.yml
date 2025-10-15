@@ -1,0 +1,155 @@
+name: FTP File Processing
+on:
+  schedule:
+    - cron: '*/5 * * * *'  # Run every 5 minutes
+  workflow_dispatch:  # Allow manual triggering
+
+env:
+  FTP_HOST: img.leenweb.app
+  FTP_USER: support.leenweb.nl
+  FTP_PASS: ${{ secrets.FTP_PASS }}
+  EMAIL_USER: ${{ secrets.EMAIL_USER }}
+  EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+
+jobs:
+  process-ftp-files:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install requests openpyxl pandas tqdm
+
+    - name: Install FTP tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y lftp
+
+    - name: Create directories
+      run: |
+        mkdir -p input_files output_files converted-files
+
+    - name: Check for new files on FTP
+      id: check-files
+      run: |
+        lftp -c "
+          open -u $FTP_USER,$FTP_PASS $FTP_HOST
+          cd /katanaPIM/dropfiles/input_files
+          ls -la
+        " > ftp_files.txt
+        
+        if grep -q "art.*in\|atk.*in\|mvm.*in\|uic.*in\|stc.*in" ftp_files.txt; then
+          echo "new_files=true" >> $GITHUB_OUTPUT
+        else
+          echo "new_files=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Download files from FTP
+      if: steps.check-files.outputs.new_files == 'true'
+      run: |
+        TIMESTAMP=$(date -u +"%Y%m%d_%H%M%S")
+        
+        # Download all files from input_files
+        lftp -c "
+          open -u $FTP_USER,$FTP_PASS $FTP_HOST
+          cd /katanaPIM/dropfiles/input_files
+          mirror --verbose . ./input_files/
+        "
+
+    - name: Archive previous output files
+      if: steps.check-files.outputs.new_files == 'true'
+      run: |
+        TIMESTAMP=$(date -u +"%Y%m%d_%H%M%S")
+        
+        # Check if there are existing output files and archive them
+        lftp -c "
+          open -u $FTP_USER,$FTP_PASS $FTP_HOST
+          cd /katanaPIM/dropfiles/output_files
+          
+          # Check if output_files directory has any files
+          ls -la
+        " > output_check.txt
+        
+        if grep -q -v "^d" output_check.txt && ! grep -q "total 0" output_check.txt; then
+          # Archive existing output files
+          lftp -c "
+            open -u $FTP_USER,$FTP_PASS $FTP_HOST
+            cd /katanaPIM/dropfiles
+            mkdir -p output_files/processed/output_files_${TIMESTAMP}
+            mv output_files/* output_files/processed/output_files_${TIMESTAMP}/ 2>/dev/null || true
+          "
+        fi
+
+    - name: Archive input files
+      if: steps.check-files.outputs.new_files == 'true'
+      run: |
+        TIMESTAMP=$(date -u +"%Y%m%d_%H%M%S")
+        
+        # Archive the input files we just downloaded
+        lftp -c "
+          open -u $FTP_USER,$FTP_PASS $FTP_HOST
+          cd /katanaPIM/dropfiles
+          mkdir -p input_files/processed/input_files_${TIMESTAMP}
+          mv input_files/* input_files/processed/input_files_${TIMESTAMP}/ 2>/dev/null || true
+        "
+
+    - name: Run Python conversion script
+      if: steps.check-files.outputs.new_files == 'true'
+      run: |
+        # Move downloaded files to the expected location
+        cp -r input_files/* . || true
+        
+        # Run the conversion script
+        python convert.py
+        
+        echo "Conversion completed successfully"
+
+    - name: Upload output files to FTP
+      if: steps.check-files.outputs.new_files == 'true'
+      run: |
+        # Upload all converted files to output_files directory
+        lftp -c "
+          open -u $FTP_USER,$FTP_PASS $FTP_HOST
+          cd /katanaPIM/dropfiles
+          mkdir -p output_files
+          mirror -R -v ./converted-files/ /katanaPIM/dropfiles/output_files/
+        "
+
+    - name: Send completion email
+      if: steps.check-files.outputs.new_files == 'true'
+      run: |
+        cat > email_body.txt << EOF
+        The files have been exported successfully.
+        
+        Input files have been processed and moved to:
+        /katanaPIM/dropfiles/input_files/processed/input_files_$(date -u +"%Y%m%d_%H%M%S")
+        
+        Output files are available at:
+        /katanaPIM/dropfiles/output_files/
+        
+        Previous output files have been archived to:
+        /katanaPIM/dropfiles/output_files/processed/output_files_$(date -u +"%Y%m%d_%H%M%S")
+        
+        The conversion process completed at: $(date)
+        EOF
+        
+        # Send email using sendmail or curl to SMTP
+        curl --url 'smtps://smtp.gmail.com:465' --ssl-reqd \
+          --mail-from '$EMAIL_USER' \
+          --mail-rcpt 'sajid.mbp@gmail.com' \
+          --user "$EMAIL_USER:$EMAIL_APP_PASSWORD" \
+          --upload-file email_body.txt
+
+    - name: No new files notification
+      if: steps.check-files.outputs.new_files == 'false'
+      run: |
+        echo "No new files found on FTP server. Skipping processing."

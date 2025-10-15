@@ -23,19 +23,6 @@ jobs:
         python -m pip install --upgrade pip
         pip install requests openpyxl pandas tqdm
 
-    - name: Create environment file
-      run: |
-        cat > .env << EOF
-        EMAIL_USER=${{ secrets.EMAIL_USER }}
-        EMAIL_APP_PASSWORD=${{ secrets.EMAIL_APP_PASSWORD }}
-        FTP_REMOTE_DIR=/input_files
-        FTP_UPLOAD_DIR=/output_files
-        FTP_PROCESSED_DIR=/processed
-        FTP_HOST=img.leenweb.app
-        FTP_USER=${{ secrets.FTP_USER }}
-        FTP_PASS=${{ secrets.FTP_PASS }}
-        EOF
-
     - name: Check FTP for new input files
       id: check_ftp
       env:
@@ -45,7 +32,6 @@ jobs:
       run: |
         python -c "
         from ftplib import FTP_TLS
-        import os
         
         def check_input_files(ftps):
             '''Check if there are new files in input_files directory'''
@@ -58,13 +44,14 @@ jobs:
                 for item in items:
                     if item in ['.', '..', 'processed']:
                         continue
+                    # Check if it's a file (not a directory)
                     try:
-                        ftps.cwd(item)
-                        ftps.cwd('..')
-                        # It's a directory, skip for now
-                    except:
-                        # It's a file
+                        # Try to get file size - if it works, it's a file
+                        size = ftps.size(item)
                         files.append(item)
+                    except:
+                        # It's probably a directory, skip it
+                        pass
                 
                 print(f'Found {len(files)} files in input_files: {files}')
                 return len(files) > 0, files
@@ -92,11 +79,9 @@ jobs:
         
         # Set output variables
         if has_files:
-            print('::set-output name=new_files_found::true')
-            print('::set-output name=file_list::' + ','.join(file_list))
+            print('new_files_found=true' >> \$GITHUB_OUTPUT)
         else:
-            print('::set-output name=new_files_found::false')
-            print('::set-output name=file_list::')
+            print('new_files_found=false' >> \$GITHUB_OUTPUT)
         "
 
     - name: Download FTP files
@@ -122,16 +107,16 @@ jobs:
                     if item in ['.', '..', 'processed']:
                         continue
                     
+                    # Check if it's a file (not a directory)
                     try:
-                        # Try if it's a directory
-                        ftps.cwd(item)
-                        ftps.cwd('..')
-                        print(f'Skipping directory: {item}')
-                    except:
+                        size = ftps.size(item)
                         # It's a file - download it
                         print(f'Downloading file: {item}')
                         with open(f'input_files/{item}', 'wb') as f:
                             ftps.retrbinary(f'RETR {item}', f.write)
+                    except:
+                        # It's a directory, skip it
+                        print(f'Skipping directory: {item}')
                         
             except Exception as e:
                 print(f'Error downloading files: {e}')
@@ -167,7 +152,13 @@ jobs:
         def archive_output_files(ftps):
             '''Archive existing output files before processing new ones'''
             try:
-                ftps.cwd('/katanaPIM/dropfiles/output_files')
+                # Check if output_files directory exists
+                try:
+                    ftps.cwd('/output_files')
+                except:
+                    print('✅ No output_files directory exists yet')
+                    return
+                
                 items = ftps.nlst()
                 
                 # Filter out processed directory and special entries
@@ -178,20 +169,26 @@ jobs:
                     return
                 
                 timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
-                archive_folder = f'/katanaPIM/dropfiles/output_files/processed/output_{timestamp}'
+                archive_folder = f'/output_files/processed/output_{timestamp}'
+                
+                # Create processed directory if it doesn't exist
+                try:
+                    ftps.mkd('/output_files/processed')
+                except:
+                    pass
                 
                 # Create archive directory
                 try:
                     ftps.mkd(archive_folder)
                     print(f'Created archive folder: {archive_folder}')
                 except Exception as e:
-                    print(f'Archive folder already exists or error: {e}')
+                    print(f'Archive folder already exists: {e}')
                 
                 # Move files to archive
                 for item in files_to_archive:
                     try:
                         ftps.rename(
-                            f'/katanaPIM/dropfiles/output_files/{item}',
+                            f'/output_files/{item}',
                             f'{archive_folder}/{item}'
                         )
                         print(f'📦 Archived: {item}')
@@ -220,7 +217,7 @@ jobs:
         # Copy input files to current directory for processing
         cp -r input_files/* .
         
-        # Run your conversion script (REPLACE WITH YOUR ACTUAL SCRIPT NAME)
+        # Run your conversion script
         python convert.py
         
         # List generated output files
@@ -249,22 +246,19 @@ jobs:
                 return
             
             try:
-                ftps.cwd('/katanaPIM/dropfiles/output_files')
+                # Ensure we're in output_files directory
+                try:
+                    ftps.cwd('/output_files')
+                except:
+                    # Create output_files directory if it doesn't exist
+                    ftps.mkd('/output_files')
+                    ftps.cwd('/output_files')
                 
+                # Upload all files from converted-files
                 for root, dirs, files in os.walk('converted-files'):
                     for file in files:
                         local_path = os.path.join(root, file)
-                        remote_path = file  # Upload to root of output_files
-                        
-                        # If file is in a subdirectory, create that structure
-                        rel_path = os.path.relpath(local_path, 'converted-files')
-                        if os.path.dirname(rel_path):
-                            remote_dir = os.path.dirname(rel_path)
-                            try:
-                                ftps.mkd(remote_dir)
-                            except:
-                                pass  # Directory already exists
-                            remote_path = rel_path
+                        remote_path = os.path.relpath(local_path, 'converted-files')
                         
                         print(f'📤 Uploading: {remote_path}')
                         with open(local_path, 'rb') as f:
@@ -311,14 +305,20 @@ jobs:
                     return
                 
                 timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
-                archive_folder = f'input_files/processed/input_{timestamp}'
+                archive_folder = f'/input_files/processed/input_{timestamp}'
+                
+                # Create processed directory if it doesn't exist
+                try:
+                    ftps.mkd('/input_files/processed')
+                except:
+                    pass
                 
                 # Create archive directory
                 try:
                     ftps.mkd(archive_folder)
                     print(f'Created archive folder: {archive_folder}')
                 except Exception as e:
-                    print(f'Archive folder already exists or error: {e}')
+                    print(f'Archive folder already exists: {e}')
                 
                 # Move files to archive
                 for item in files_to_archive:
@@ -346,53 +346,6 @@ jobs:
         
         ftps.quit()
         "
-
-    - name: Send success email notification
-      if: steps.check_ftp.outputs.new_files_found == 'true'
-      uses: dawidd6/action-send-mail@v3
-      with:
-        server_address: smtp.gmail.com
-        server_port: 587
-        username: ${{ secrets.EMAIL_USER }}
-        password: ${{ secrets.EMAIL_APP_PASSWORD }}
-        subject: 'Files are exported - KatanaPIM Processing Complete'
-        to: sajid.mbp@gmail.com
-        from: GitHub Actions
-        body: |
-          The file conversion has been completed successfully!
-          
-          📁 Output files are available at:
-          https://img.leenweb.app/output_files/
-          
-          These files will remain available until the next processing run.
-          
-          Input files have been archived to:
-          /input_files/processed/input_[timestamp]/
-          
-          Previous output files have been archived to:
-          /output_files/processed/output_[timestamp]/
-          
-          Best regards,
-          GitHub Actions Automation
-
-    - name: Send no files notification
-      if: steps.check_ftp.outputs.new_files_found == 'false'
-      uses: dawidd6/action-send-mail@v3
-      with:
-        server_address: smtp.gmail.com
-        server_port: 587
-        username: ${{ secrets.EMAIL_USER }}
-        password: ${{ secrets.EMAIL_APP_PASSWORD }}
-        subject: 'No New Files - KatanaPIM Check'
-        to: sajid.mbp@gmail.com
-        from: GitHub Actions
-        body: |
-          The scheduled check ran but no new files were found in the input directory.
-          
-          Next check will be in 15 minutes.
-          
-          Current output files remain available at:
-          https://img.leenweb.app/output_files/
 
     - name: Clean up local files
       if: always()

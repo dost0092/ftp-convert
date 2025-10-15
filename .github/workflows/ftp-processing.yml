@@ -1,22 +1,16 @@
 name: FTP File Processing
 on:
   schedule:
-    - cron: '*/15 * * * *'  # Run every 15 minutes
+    # Check every 15 minutes for new files
+    - cron: '*/15 * * * *'
   workflow_dispatch:  # Allow manual triggering
-
-env:
-  FTP_HOST: img.leenweb.app
-  FTP_USER: support.leenweb.nl
-  FTP_PASS: ${{ secrets.FTP_PASS }}
-  EMAIL_USER: ${{ secrets.EMAIL_USER }}
-  EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
 
 jobs:
   process-ftp-files:
     runs-on: ubuntu-latest
     
     steps:
-    - name: Checkout code
+    - name: Checkout repository
       uses: actions/checkout@v4
 
     - name: Set up Python
@@ -27,239 +21,372 @@ jobs:
     - name: Install Python dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install requests openpyxl pandas tqdm
+        pip install requests openpyxl pandas tqdm ftplib
 
-    - name: Install FTP tools
+    - name: Create environment file
       run: |
-        sudo apt-get update
-        sudo apt-get install -y lftp
-
-    - name: Create directories
-      run: |
-        mkdir -p input_files output_files converted-files
-
-    - name: Create lftp configuration
-      run: |
-        cat > .lftprc << EOF
-        set ftp:ssl-allow no
-        set ssl:verify-certificate no
+        cat > .env << EOF
+        EMAIL_USER=${{ secrets.EMAIL_USER }}
+        EMAIL_APP_PASSWORD=${{ secrets.EMAIL_APP_PASSWORD }}
+        FTP_REMOTE_DIR=/katanaPIM/dropfiles/input_files
+        FTP_UPLOAD_DIR=/katanaPIM/dropfiles/output_files
+        FTP_PROCESSED_DIR=/katanaPIM/dropfiles/processed
+        FTP_HOST=img.leenweb.app
+        FTP_USER=${{ secrets.FTP_USER }}
+        FTP_PASS=${{ secrets.FTP_PASS }}
         EOF
 
-    - name: Check for new files on FTP
-      id: check-files
+    - name: Download FTP files recursively
+      env:
+        FTP_HOST: img.leenweb.app
+        FTP_USER: ${{ secrets.FTP_USER }}
+        FTP_PASS: ${{ secrets.FTP_PASS }}
       run: |
-        # Get list of current files in input_files
-        lftp -c "
-          set ftp:ssl-allow no
-          set ssl:verify-certificate no
-          open -u $FTP_USER,$FTP_PASS $FTP_HOST
-          cd /input_files
-          ls -la
-        " > current_files.txt
+        python -c "
+        from ftplib import FTP_TLS
+        import os
+        from datetime import datetime
         
-        echo "=== Files in /input_files ==="
-        cat current_files.txt
+        def download_ftp_directory(ftps, remote_path, local_path):
+            '''Recursively download FTP directory'''
+            try:
+                ftps.cwd(remote_path)
+                os.makedirs(local_path, exist_ok=True)
+                
+                items = ftps.nlst()
+                for item in items:
+                    if item in ['.', '..']:
+                        continue
+                    
+                    try:
+                        # Try to enter subdirectory
+                        ftps.cwd(item)
+                        # It's a directory - recurse
+                        download_ftp_directory(ftps, f'{remote_path}{item}/', f'{local_path}{item}/')
+                        ftps.cwd('..')
+                    except Exception:
+                        # It's a file - download it
+                        print(f'Downloading: {remote_path}{item}')
+                        with open(f'{local_path}{item}', 'wb') as f:
+                            ftps.retrbinary(f'RETR {item}', f.write)
+            except Exception as e:
+                print(f'Error downloading {remote_path}: {e}')
         
-        # Check if there are any processing files (art, atk, mvm, uic, stc, lev)
-        if grep -q -E "(art.*in|atk.*in|mvm.*in|uic.*in|stc.*in|lev.*in)" current_files.txt; then
-          echo "new_files=true" >> $GITHUB_OUTPUT
-          echo "✅ New files detected - will process"
+        # Connect securely to FTP
+        ftps = FTP_TLS('$FTP_HOST')
+        ftps.login(user='$FTP_USER', passwd='$FTP_PASS')
+        ftps.prot_p()
+        
+        print('✅ Securely connected to FTP')
+        
+        # Create local directories
+        os.makedirs('input_files', exist_ok=True)
+        os.makedirs('converted-files', exist_ok=True)
+        
+        # Download entire input_files directory recursively
+        download_ftp_directory(ftps, '/katanaPIM/dropfiles/input_files/', 'input_files/')
+        
+        # List downloaded files
+        print('Downloaded files:')
+        for root, dirs, files in os.walk('input_files'):
+            for file in files:
+                print(f'  {os.path.join(root, file)}')
+        
+        ftps.quit()
+        "
+
+    - name: Check if new input files exist
+      id: check_files
+      run: |
+        # Count files in input_files (excluding ART_DOCS for decision, but we still process them)
+        file_count=$(find input_files -type f -not -path '*/ART_DOCS/*' | wc -l)
+        art_docs_count=$(find input_files/ART_DOCS -type f 2>/dev/null | wc -l)
+        
+        echo "Main input files: $file_count"
+        echo "ART_DOCS files: $art_docs_count"
+        
+        if [ $file_count -gt 0 ]; then
+          echo "files_exist=true" >> $GITHUB_OUTPUT
+          echo "new_files_found=true" >> $GITHUB_OUTPUT
         else
-          echo "new_files=false" >> $GITHUB_OUTPUT
-          echo "❌ No processing files found"
+          echo "files_exist=false" >> $GITHUB_OUTPUT
+          echo "new_files_found=false" >> $GITHUB_OUTPUT
         fi
 
-    - name: Download processing files from FTP
-      if: steps.check-files.outputs.new_files == 'true'
+    - name: Archive existing output files before processing
+      if: steps.check_files.outputs.new_files_found == 'true'
+      env:
+        FTP_HOST: img.leenweb.app
+        FTP_USER: ${{ secrets.FTP_USER }}
+        FTP_PASS: ${{ secrets.FTP_PASS }}
       run: |
-        echo "📥 Downloading processing files from /input_files/..."
+        python -c "
+        from ftplib import FTP_TLS
+        import os
+        from datetime import datetime
         
-        # Download only the required processing files
-        lftp -c "
-          set ftp:ssl-allow no
-          set ssl:verify-certificate no
-          open -u $FTP_USER,$FTP_PASS $FTP_HOST
-          cd /input_files
-          mget art1443in atk1443in mvm1443in uic1443in stc1443in lev1443in
+        def move_directory(ftps, from_path, to_path):
+            '''Move entire directory recursively'''
+            try:
+                ftps.cwd(from_path)
+                items = ftps.nlst()
+                
+                # Create target directory
+                try:
+                    ftps.mkd(to_path)
+                except:
+                    pass
+                
+                for item in items:
+                    if item in ['.', '..']:
+                        continue
+                    
+                    try:
+                        ftps.cwd(item)
+                        # It's a directory - recurse
+                        move_directory(ftps, f'{from_path}{item}/', f'{to_path}{item}/')
+                        # Remove empty source directory
+                        try:
+                            ftps.rmd(f'{from_path}{item}')
+                        except:
+                            pass
+                    except Exception:
+                        # It's a file - move it
+                        try:
+                            ftps.rename(f'{from_path}{item}', f'{to_path}{item}')
+                            print(f'Moved: {from_path}{item} -> {to_path}{item}')
+                        except Exception as e:
+                            print(f'Error moving {from_path}{item}: {e}')
+            except Exception as e:
+                print(f'Error in move_directory {from_path}: {e}')
+        
+        # Connect securely
+        ftps = FTP_TLS('$FTP_HOST')
+        ftps.login(user='$FTP_USER', passwd='$FTP_PASS')
+        ftps.prot_p()
+        
+        timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+        
+        # Check if output_files has content (excluding processed folder)
+        try:
+            ftps.cwd('/katanaPIM/dropfiles/output_files')
+            items = [item for item in ftps.nlst() if item not in ['.', '..', 'processed']]
+            
+            if items:
+                print('Archiving existing output files...')
+                archive_folder = f'/katanaPIM/dropfiles/output_files/processed/output_{timestamp}'
+                
+                # Move each item to archive
+                for item in items:
+                    try:
+                        ftps.rename(
+                            f'/katanaPIM/dropfiles/output_files/{item}',
+                            f'{archive_folder}/{item}'
+                        )
+                        print(f'Archived: {item}')
+                    except Exception as e:
+                        print(f'Error archiving {item}: {e}')
+            else:
+                print('No existing output files to archive')
+                
+        except Exception as e:
+            print(f'Error checking output_files: {e}')
+        
+        ftps.quit()
         "
-        
-        echo "=== Downloaded files ==="
-        ls -la *.in
-
-    - name: Archive previous output files
-      if: steps.check-files.outputs.new_files == 'true'
-      run: |
-        TIMESTAMP=$(date -u +"%Y%m%d_%H%M%S")
-        
-        # Check current output files
-        lftp -c "
-          set ftp:ssl-allow no
-          set ssl:verify-certificate no
-          open -u $FTP_USER,$FTP_PASS $FTP_HOST
-          cd /output_files
-          ls -la
-        " > output_check.txt
-        
-        echo "=== Current /output_files ==="
-        cat output_check.txt
-        
-        # Create processed directory if it doesn't exist
-        lftp -c "
-          set ftp:ssl-allow no
-          set ssl:verify-certificate no
-          open -u $FTP_USER,$FTP_PASS $FTP_HOST
-          cd /output_files
-          mkdir -p processed
-        "
-        
-        # Archive each output folder individually if it exists
-        for folder in in pw bs pm; do
-          lftp -c "
-            set ftp:ssl-allow no
-            set ssl:verify-certificate no
-            open -u $FTP_USER,$FTP_PASS $FTP_HOST
-            cd /output_files
-            mkdir -p processed/output_files_${TIMESTAMP}
-            mv $folder processed/output_files_${TIMESTAMP}/ 2>/dev/null || echo 'Folder $folder not found, skipping'
-          "
-        done
-        
-        echo "✅ Previous output files archived to /output_files/processed/output_files_${TIMESTAMP}/"
-
-    - name: Archive input files
-      if: steps.check-files.outputs.new_files == 'true'
-      run: |
-        TIMESTAMP=$(date -u +"%Y%m%d_%H%M%S")
-        
-        echo "📦 Archiving input files to /input_files/processed/input_files_${TIMESTAMP}/"
-        
-        # Create processed directory structure
-        lftp -c "
-          set ftp:ssl-allow no
-          set ssl:verify-certificate no
-          open -u $FTP_USER,$FTP_PASS $FTP_HOST
-          cd /input_files
-          mkdir -p processed
-          cd processed
-          mkdir -p input_files_${TIMESTAMP}
-        "
-        
-        # Move each processing file individually to archive
-        for file in art1443in atk1443in mvm1443in uic1443in stc1443in lev1443in; do
-          lftp -c "
-            set ftp:ssl-allow no
-            set ssl:verify-certificate no
-            open -u $FTP_USER,$FTP_PASS $FTP_HOST
-            cd /input_files
-            mv $file processed/input_files_${TIMESTAMP}/ 2>/dev/null || echo 'File $file not found, skipping'
-          "
-        done
-        
-        echo "✅ Input files archived to /input_files/processed/input_files_${TIMESTAMP}/"
 
     - name: Run Python conversion script
-      if: steps.check-files.outputs.new_files == 'true'
+      if: steps.check_files.outputs.new_files_found == 'true'
       run: |
-        echo "🔄 Running conversion script..."
+        # Copy all input files to current directory for processing
+        cp -r input_files/* .
         
-        # List files to verify
-        echo "=== Files available for processing ==="
-        ls -la *.in
+        # Run your conversion script
+        python convert.py
         
-        # Run the conversion script (replace with your actual script name)
-        python your_script_name.py
-        
-        echo "✅ Conversion completed successfully"
-        
-        # Show generated files
-        echo "=== Generated output files ==="
-        find converted-files -type f | head -20
+        # List generated output files
+        echo "Generated output files:"
+        find converted-files -type f
 
-    - name: Upload output files to FTP
-      if: steps.check-files.outputs.new_files == 'true'
+    - name: Upload new output files to FTP
+      if: steps.check_files.outputs.new_files_found == 'true'
+      env:
+        FTP_HOST: img.leenweb.app
+        FTP_USER: ${{ secrets.FTP_USER }}
+        FTP_PASS: ${{ secrets.FTP_PASS }}
       run: |
-        echo "⬆️ Uploading output files to /output_files/"
+        python -c "
+        from ftplib import FTP_TLS
+        import os
         
-        # Upload all converted files to /output_files directory
-        lftp -c "
-          set ftp:ssl-allow no
-          set ssl:verify-certificate no
-          open -u $FTP_USER,$FTP_PASS $FTP_HOST
-          cd /
-          mirror -R -v ./converted-files/ /output_files/
+        def upload_directory(ftps, local_path, remote_path):
+            '''Recursively upload directory to FTP'''
+            try:
+                # Try to create remote directory
+                try:
+                    ftps.mkd(remote_path)
+                except:
+                    pass
+                
+                ftps.cwd(remote_path)
+                
+                for item in os.listdir(local_path):
+                    local_item = os.path.join(local_path, item)
+                    if os.path.isdir(local_item):
+                        # Recursively upload subdirectory
+                        upload_directory(ftps, local_item, f'{remote_path}{item}/')
+                    else:
+                        # Upload file
+                        with open(local_item, 'rb') as f:
+                            ftps.storbinary(f'STOR {item}', f)
+                        print(f'Uploaded: {remote_path}{item}')
+            except Exception as e:
+                print(f'Error uploading {local_path} to {remote_path}: {e}')
+        
+        # Connect securely
+        ftps = FTP_TLS('$FTP_HOST')
+        ftps.login(user='$FTP_USER', passwd='$FTP_PASS')
+        ftps.prot_p()
+        
+        # Upload converted files to output_files
+        if os.path.exists('converted-files'):
+            upload_directory(ftps, 'converted-files', '/katanaPIM/dropfiles/output_files/')
+        else:
+            print('No converted-files directory found')
+        
+        ftps.quit()
         "
-        
-        echo "✅ New output files uploaded to /output_files/"
 
-    - name: Send completion email
-      if: steps.check-files.outputs.new_files == 'true'
+    - name: Archive processed input files
+      if: steps.check_files.outputs.new_files_found == 'true'
+      env:
+        FTP_HOST: img.leenweb.app
+        FTP_USER: ${{ secrets.FTP_USER }}
+        FTP_PASS: ${{ secrets.FTP_PASS }}
       run: |
-        TIMESTAMP=$(date -u +"%Y%m%d_%H%M%S")
+        python -c "
+        from ftplib import FTP_TLS
+        import os
+        from datetime import datetime
         
-        cat > email_body.txt << EOF
-        Subject: 🚀 KatanaPIM Files Export Completed
-
-        Hello,
-
-        Your file conversion has been completed successfully!
-
-        📊 PROCESSING SUMMARY:
-        • Input files processed: art1443in, atk1443in, mvm1443in, uic1443in, stc1443in, lev1443in
-        • Process completed: $(date)
-        • Archive timestamp: ${TIMESTAMP}
-
-        📁 FILE LOCATIONS:
-
-        📍 CURRENT OUTPUT FILES (Ready for PIM Import):
-        https://img.leenweb.app/output_files/
-
-        The following folders are available for import:
-        - https://img.leenweb.app/output_files/in/ (for INHOUSE)
-        - https://img.leenweb.app/output_files/pw/ (for Pronto Wonen) 
-        - https://img.leenweb.app/output_files/bs/ (for Baenks)
-        - https://img.leenweb.app/output_files/pm/ (for Profijt Meubel)
-
-        📍 ARCHIVED FILES:
-        • Input files: /input_files/processed/input_files_${TIMESTAMP}/
-        • Previous outputs: /output_files/processed/output_files_${TIMESTAMP}/
-
-        🔗 IMPORT INSTRUCTIONS:
-        1. Access the output files at the URLs above
-        2. Import the XLSX files into your PIM system
-        3. The files will remain available in /output_files/ until you upload new input files
-
-        The output files will remain accessible until you upload new files to /input_files/.
-
-        Best regards,
-        KatanaPIM Automation System
-        EOF
+        def move_directory(ftps, from_path, to_path):
+            '''Move entire directory recursively'''
+            try:
+                ftps.cwd(from_path)
+                items = ftps.nlst()
+                
+                # Create target directory
+                try:
+                    ftps.mkd(to_path)
+                except:
+                    pass
+                
+                for item in items:
+                    if item in ['.', '..']:
+                        continue
+                    
+                    try:
+                        ftps.cwd(item)
+                        # It's a directory - recurse
+                        move_directory(ftps, f'{from_path}{item}/', f'{to_path}{item}/')
+                        # Remove empty source directory
+                        try:
+                            ftps.rmd(f'{from_path}{item}')
+                        except:
+                            pass
+                    except Exception:
+                        # It's a file - move it
+                        try:
+                            ftps.rename(f'{from_path}{item}', f'{to_path}{item}')
+                            print(f'Moved: {from_path}{item} -> {to_path}{item}')
+                        except Exception as e:
+                            print(f'Error moving {from_path}{item}: {e}')
+            except Exception as e:
+                print(f'Error in move_directory {from_path}: {e}')
         
-        # Send email using curl to Gmail SMTP
-        curl -s --url 'smtps://smtp.gmail.com:465' --ssl-reqd \
-          --mail-from '${{ secrets.EMAIL_USER }}' \
-          --mail-rcpt 'sajid.mbp@gmail.com' \
-          --user "${{ secrets.EMAIL_USER }}:${{ secrets.EMAIL_APP_PASSWORD }}" \
-          -T email_body.txt
+        # Connect securely
+        ftps = FTP_TLS('$FTP_HOST')
+        ftps.login(user='$FTP_USER', passwd='$FTP_PASS')
+        ftps.prot_p()
         
-        echo "📧 Completion email sent to sajid.mbp@gmail.com"
+        timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+        archive_folder = f'/katanaPIM/dropfiles/input_files/processed/input_{timestamp}'
+        
+        print('Archiving processed input files...')
+        
+        # Move all content from input_files to archive (excluding processed folder)
+        try:
+            ftps.cwd('/katanaPIM/dropfiles/input_files')
+            items = [item for item in ftps.nlst() if item not in ['.', '..', 'processed']]
+            
+            for item in items:
+                try:
+                    ftps.rename(
+                        f'/katanaPIM/dropfiles/input_files/{item}',
+                        f'{archive_folder}/{item}'
+                    )
+                    print(f'Archived: {item}')
+                except Exception as e:
+                    print(f'Error archiving {item}: {e}')
+                    
+        except Exception as e:
+            print(f'Error archiving input files: {e}')
+        
+        ftps.quit()
+        "
 
-    - name: Clean up downloaded files
-      if: steps.check-files.outputs.new_files == 'true'
+    - name: Send success email notification
+      if: steps.check_files.outputs.new_files_found == 'true'
+      uses: dawidd6/action-send-mail@v3
+      with:
+        server_address: smtp.gmail.com
+        server_port: 587
+        username: ${{ secrets.EMAIL_USER }}
+        password: ${{ secrets.EMAIL_APP_PASSWORD }}
+        subject: 'Files are exported - KatanaPIM Processing Complete'
+        to: sajid.mbp@gmail.com
+        from: GitHub Actions
+        body: |
+          The file conversion has been completed successfully!
+          
+          📁 Output files are available at:
+          https://img.leenweb.app/katanaPIM/dropfiles/output_files/
+          
+          These files will remain available until the next processing run.
+          
+          Input files have been archived to:
+          /input_files/processed/input_[timestamp]/
+          
+          Previous output files have been archived to:
+          /output_files/processed/output_[timestamp]/
+          
+          Best regards,
+          GitHub Actions Automation
+
+    - name: Send no files notification
+      if: steps.check_files.outputs.new_files_found == 'false'
+      uses: dawidd6/action-send-mail@v3
+      with:
+        server_address: smtp.gmail.com
+        server_port: 587
+        username: ${{ secrets.EMAIL_USER }}
+        password: ${{ secrets.EMAIL_APP_PASSWORD }}
+        subject: 'No New Files - KatanaPIM Check'
+        to: sajid.mbp@gmail.com
+        from: GitHub Actions
+        body: |
+          The scheduled check ran but no new files were found in the input directory.
+          
+          Next check will be in 15 minutes.
+          
+          Current input files have already been processed and are archived in:
+          /input_files/processed/
+          
+          Current output files remain available at:
+          https://img.leenweb.app/katanaPIM/dropfiles/output_files/
+
+    - name: Clean up local files
+      if: always()
       run: |
-        echo "🧹 Cleaning up downloaded files..."
-        rm -f *.in || true
-        rm -rf input_files/ converted-files/ || true
-
-    - name: No new files notification
-      if: steps.check-files.outputs.new_files == 'false'
-      run: |
-        echo "⏭️ No new processing files found in /input_files/. Skipping processing."
-        echo "Current /input_files contents:"
-        lftp -c "
-          set ftp:ssl-allow no
-          set ssl:verify-certificate no
-          open -u $FTP_USER,$FTP_PASS $FTP_HOST
-          cd /input_files
-          ls -la
-        " || true
-        echo "Next check in 15 minutes..."
+        rm -rf input_files converted-files
+        echo "Local files cleaned up"

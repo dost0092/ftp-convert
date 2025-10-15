@@ -1,7 +1,7 @@
 name: FTP File Processing
 on:
   schedule:
-    - cron: '*/5 * * * *'  # Run every 5 minutes
+    - cron: '0 */5 * * *'  # Run every 5 hours
   workflow_dispatch:  # Allow manual triggering
 
 env:

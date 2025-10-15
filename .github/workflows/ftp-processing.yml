@@ -171,7 +171,7 @@ jobs:
         ls -la *.in
         
         # Run the conversion script (replace with your actual script name)
-        python your_script_name.py
+        python convert.py
         
         echo "✅ Conversion completed successfully"
         

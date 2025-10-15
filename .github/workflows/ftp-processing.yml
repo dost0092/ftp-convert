@@ -48,8 +48,6 @@ jobs:
     - name: Check for new files on FTP
       id: check-files
       run: |
-        TIMESTAMP=$(date -u +"%Y%m%d_%H%M%S")
-        
         # Get list of current files in input_files
         lftp -c "
           set ftp:ssl-allow no
@@ -62,8 +60,8 @@ jobs:
         echo "=== Files in /input_files ==="
         cat current_files.txt
         
-        # Check if there are any input files (excluding processed folder)
-        if grep -q -E "art.*in|atk.*in|mvm.*in|uic.*in|stc.*in" current_files.txt && ! grep -q "processed" current_files.txt; then
+        # Check if there are any input files (excluding ART_DOCS folder and processed)
+        if grep -q -E "^(art.*in|atk.*in|mvm.*in|uic.*in|stc.*in|lev.*in)" current_files.txt; then
           echo "new_files=true" >> $GITHUB_OUTPUT
           echo "✅ New files detected - will process"
         else
@@ -74,20 +72,19 @@ jobs:
     - name: Download files from FTP
       if: steps.check-files.outputs.new_files == 'true'
       run: |
-        TIMESTAMP=$(date -u +"%Y%m%d_%H%M%S")
-        echo "📥 Downloading files at: $TIMESTAMP"
+        echo "📥 Downloading files..."
         
-        # Download all files from /input_files (excluding processed folder)
+        # Download only the required files from /input_files (exclude ART_DOCS)
         lftp -c "
           set ftp:ssl-allow no
           set ssl:verify-certificate no
           open -u $FTP_USER,$FTP_PASS $FTP_HOST
           cd /input_files
-          mirror --verbose --exclude processed/ . ./input_files/
+          mget art*in atk*in mvm*in uic*in stc*in lev*in
         "
         
         echo "=== Downloaded files ==="
-        ls -la input_files/
+        ls -la *.in
 
     - name: Archive previous output files to /output_files/processed
       if: steps.check-files.outputs.new_files == 'true'
@@ -107,28 +104,28 @@ jobs:
         cat output_check.txt
         
         # Archive existing output files if they exist (excluding processed folder)
-        if grep -q -v -E "^d|processed" output_check.txt && ! grep -q "total 0" output_check.txt; then
+        if grep -q -E "^(in$|bs$|pw$|pm$)" output_check.txt; then
           echo "📦 Archiving previous output files to /output_files/processed/output_files_${TIMESTAMP}/"
           
-          # Create processed directory if it doesn't exist
+          # Create archive directory
           lftp -c "
             set ftp:ssl-allow no
             set ssl:verify-certificate no
             open -u $FTP_USER,$FTP_PASS $FTP_HOST
             cd /output_files
-            mkdir -p processed
-            cd processed
-            mkdir -p output_files_${TIMESTAMP}
+            mkdir -p processed/output_files_${TIMESTAMP}
           "
           
-          # Move all files (except processed folder) to archive
-          lftp -c "
-            set ftp:ssl-allow no
-            set ssl:verify-certificate no
-            open -u $FTP_USER,$FTP_PASS $FTP_HOST
-            cd /output_files
-            mv * processed/output_files_${TIMESTAMP}/ 2>/dev/null || true
-          "
+          # Move each folder individually to avoid errors
+          for folder in in bs pw pm; do
+            lftp -c "
+              set ftp:ssl-allow no
+              set ssl:verify-certificate no
+              open -u $FTP_USER,$FTP_PASS $FTP_HOST
+              cd /output_files
+              mv $folder processed/output_files_${TIMESTAMP}/ 2>/dev/null || echo 'Folder $folder not found or already moved'
+            "
+          done
           
           echo "✅ Output files archived"
         else
@@ -142,25 +139,25 @@ jobs:
         
         echo "📦 Archiving input files to /input_files/processed/input_files_${TIMESTAMP}/"
         
-        # Create processed directory structure
+        # Create archive directory
         lftp -c "
           set ftp:ssl-allow no
           set ssl:verify-certificate no
           open -u $FTP_USER,$FTP_PASS $FTP_HOST
           cd /input_files
-          mkdir -p processed
-          cd processed
-          mkdir -p input_files_${TIMESTAMP}
+          mkdir -p processed/input_files_${TIMESTAMP}
         "
         
-        # Move all input files (excluding processed folder) to archive
-        lftp -c "
-          set ftp:ssl-allow no
-          set ssl:verify-certificate no
-          open -u $FTP_USER,$FTP_PASS $FTP_HOST
-          cd /input_files
-          mv * processed/input_files_${TIMESTAMP}/ 2>/dev/null || true
-        "
+        # Move each file individually to avoid errors with ART_DOCS folder
+        for file in art1443in atk1443in mvm1443in uic1443in stc1443in lev1443in; do
+          lftp -c "
+            set ftp:ssl-allow no
+            set ssl:verify-certificate no
+            open -u $FTP_USER,$FTP_PASS $FTP_HOST
+            cd /input_files
+            mv $file processed/input_files_${TIMESTAMP}/ 2>/dev/null || echo 'File $file not found or already moved'
+          "
+        done
         
         echo "✅ Input files archived"
 
@@ -169,15 +166,12 @@ jobs:
       run: |
         echo "🔄 Running conversion script..."
         
-        # Copy downloaded files to current directory for processing
-        cp -r input_files/* . || true
-        
         # List files to verify
         echo "=== Files available for processing ==="
-        ls -la | grep -E "art.*in|atk.*in|mvm.*in|uic.*in|stc.*in" || echo "No matching files found"
+        ls -la *.in
         
         # Run the conversion script (replace with your actual script name)
-        python your_script_name.py
+        python convert.py
         
         echo "✅ Conversion completed successfully"
         
@@ -207,7 +201,7 @@ jobs:
         TIMESTAMP=$(date -u +"%Y%m%d_%H%M%S")
         
         # Get list of processed files for the email
-        PROCESSED_FILES=$(ls input_files/ | grep -E "art.*in|atk.*in|mvm.*in|uic.*in|stc.*in" | tr '\n' ',' | sed 's/,$//')
+        PROCESSED_FILES=$(ls *.in 2>/dev/null | tr '\n' ',' | sed 's/,$//' || echo "No files found")
         
         cat > email_body.txt << EOF
         Subject: 🚀 KatanaPIM Export Completed - $TIMESTAMP
@@ -251,6 +245,13 @@ jobs:
           -T email_body.txt
         
         echo "📧 Completion email sent to sajid.mbp@gmail.com"
+
+    - name: Clean up downloaded files
+      if: steps.check-files.outputs.new_files == 'true'
+      run: |
+        echo "🧹 Cleaning up downloaded files..."
+        rm -f *.in || true
+        rm -rf input_files/ || true
 
     - name: No new files notification
       if: steps.check-files.outputs.new_files == 'false'

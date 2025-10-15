@@ -1338,7 +1338,7 @@ def export_image_mapping_to_xlsx():
                 continue
             # Always extract filename from img_path
             filename = os.path.basename(img_path)
-            url = f"https://img.leenweb.app/katanaPIM/dropfiles/output_files/ART_DOCS/{filename}"
+            url = f"https://img.leenweb.app/output_files/ART_DOCS/{filename}"
             sku_map.setdefault(sku, {})
             sku_map[sku][displayorder.zfill(2)] = url
     # Bepaal het maximale aantal images per SKU

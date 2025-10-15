@@ -1,7 +1,7 @@
 name: FTP File Processing
 on:
   schedule:
-    - cron: '*/5 * * * *'  # Run every 5 minutes
+    - cron: '*/15 * * * *'  # Run every 15 minutes
   workflow_dispatch:  # Allow manual triggering
 
 env:
@@ -48,129 +48,212 @@ jobs:
     - name: Check for new files on FTP
       id: check-files
       run: |
+        TIMESTAMP=$(date -u +"%Y%m%d_%H%M%S")
+        
+        # Get list of current files in input_files
         lftp -c "
           set ftp:ssl-allow no
           set ssl:verify-certificate no
           open -u $FTP_USER,$FTP_PASS $FTP_HOST
-          cd /katanaPIM/dropfiles/input_files
+          cd /input_files
           ls -la
-        " > ftp_files.txt
+        " > current_files.txt
         
-        if grep -q "art.*in\|atk.*in\|mvm.*in\|uic.*in\|stc.*in" ftp_files.txt; then
+        echo "=== Files in /input_files ==="
+        cat current_files.txt
+        
+        # Check if there are any input files (excluding processed folder)
+        if grep -q -E "art.*in|atk.*in|mvm.*in|uic.*in|stc.*in" current_files.txt && ! grep -q "processed" current_files.txt; then
           echo "new_files=true" >> $GITHUB_OUTPUT
+          echo "✅ New files detected - will process"
         else
           echo "new_files=false" >> $GITHUB_OUTPUT
+          echo "❌ No new files found"
         fi
 
     - name: Download files from FTP
       if: steps.check-files.outputs.new_files == 'true'
       run: |
         TIMESTAMP=$(date -u +"%Y%m%d_%H%M%S")
+        echo "📥 Downloading files at: $TIMESTAMP"
         
-        # Download all files from input_files
+        # Download all files from /input_files (excluding processed folder)
         lftp -c "
           set ftp:ssl-allow no
           set ssl:verify-certificate no
           open -u $FTP_USER,$FTP_PASS $FTP_HOST
-          cd /katanaPIM/dropfiles/input_files
-          mirror --verbose . ./input_files/
+          cd /input_files
+          mirror --verbose --exclude processed/ . ./input_files/
         "
+        
+        echo "=== Downloaded files ==="
+        ls -la input_files/
 
-    - name: Archive previous output files
+    - name: Archive previous output files to /output_files/processed
       if: steps.check-files.outputs.new_files == 'true'
       run: |
         TIMESTAMP=$(date -u +"%Y%m%d_%H%M%S")
         
-        # Check if there are existing output files and archive them
+        # Check if there are existing output files to archive
         lftp -c "
           set ftp:ssl-allow no
           set ssl:verify-certificate no
           open -u $FTP_USER,$FTP_PASS $FTP_HOST
-          cd /katanaPIM/dropfiles/output_files
-          
-          # Check if output_files directory has any files
+          cd /output_files
           ls -la
         " > output_check.txt
         
-        if grep -q -v "^d" output_check.txt && ! grep -q "total 0" output_check.txt; then
-          # Archive existing output files
+        echo "=== Current output files ==="
+        cat output_check.txt
+        
+        # Archive existing output files if they exist (excluding processed folder)
+        if grep -q -v -E "^d|processed" output_check.txt && ! grep -q "total 0" output_check.txt; then
+          echo "📦 Archiving previous output files to /output_files/processed/output_files_${TIMESTAMP}/"
+          
+          # Create processed directory if it doesn't exist
           lftp -c "
             set ftp:ssl-allow no
             set ssl:verify-certificate no
             open -u $FTP_USER,$FTP_PASS $FTP_HOST
-            cd /katanaPIM/dropfiles
-            mkdir -p output_files/processed/output_files_${TIMESTAMP}
-            mv output_files/* output_files/processed/output_files_${TIMESTAMP}/ 2>/dev/null || true
+            cd /output_files
+            mkdir -p processed
+            cd processed
+            mkdir -p output_files_${TIMESTAMP}
           "
+          
+          # Move all files (except processed folder) to archive
+          lftp -c "
+            set ftp:ssl-allow no
+            set ssl:verify-certificate no
+            open -u $FTP_USER,$FTP_PASS $FTP_HOST
+            cd /output_files
+            mv * processed/output_files_${TIMESTAMP}/ 2>/dev/null || true
+          "
+          
+          echo "✅ Output files archived"
+        else
+          echo "📭 No previous output files to archive"
         fi
 
-    - name: Archive input files
+    - name: Archive input files to /input_files/processed
       if: steps.check-files.outputs.new_files == 'true'
       run: |
         TIMESTAMP=$(date -u +"%Y%m%d_%H%M%S")
         
-        # Archive the input files we just downloaded
+        echo "📦 Archiving input files to /input_files/processed/input_files_${TIMESTAMP}/"
+        
+        # Create processed directory structure
         lftp -c "
           set ftp:ssl-allow no
           set ssl:verify-certificate no
           open -u $FTP_USER,$FTP_PASS $FTP_HOST
-          cd /katanaPIM/dropfiles
-          mkdir -p input_files/processed/input_files_${TIMESTAMP}
-          mv input_files/* input_files/processed/input_files_${TIMESTAMP}/ 2>/dev/null || true
+          cd /input_files
+          mkdir -p processed
+          cd processed
+          mkdir -p input_files_${TIMESTAMP}
         "
+        
+        # Move all input files (excluding processed folder) to archive
+        lftp -c "
+          set ftp:ssl-allow no
+          set ssl:verify-certificate no
+          open -u $FTP_USER,$FTP_PASS $FTP_HOST
+          cd /input_files
+          mv * processed/input_files_${TIMESTAMP}/ 2>/dev/null || true
+        "
+        
+        echo "✅ Input files archived"
 
     - name: Run Python conversion script
       if: steps.check-files.outputs.new_files == 'true'
       run: |
-        # Move downloaded files to the expected location
+        echo "🔄 Running conversion script..."
+        
+        # Copy downloaded files to current directory for processing
         cp -r input_files/* . || true
         
-        # Run the conversion script
+        # List files to verify
+        echo "=== Files available for processing ==="
+        ls -la | grep -E "art.*in|atk.*in|mvm.*in|uic.*in|stc.*in" || echo "No matching files found"
+        
+        # Run the conversion script (replace with your actual script name)
         python your_script_name.py
         
-        echo "Conversion completed successfully"
+        echo "✅ Conversion completed successfully"
+        
+        # Show generated files
+        echo "=== Generated output files ==="
+        find converted-files -type f | head -20
 
     - name: Upload output files to FTP
       if: steps.check-files.outputs.new_files == 'true'
       run: |
-        # Upload all converted files to output_files directory
+        echo "⬆️ Uploading output files to /output_files/"
+        
+        # Upload all converted files to /output_files directory
         lftp -c "
           set ftp:ssl-allow no
           set ssl:verify-certificate no
           open -u $FTP_USER,$FTP_PASS $FTP_HOST
-          cd /katanaPIM/dropfiles
-          mkdir -p output_files
-          mirror -R -v ./converted-files/ /katanaPIM/dropfiles/output_files/
+          cd /
+          mirror -R -v ./converted-files/ /output_files/
         "
+        
+        echo "✅ Output files uploaded to FTP"
 
     - name: Send completion email
       if: steps.check-files.outputs.new_files == 'true'
       run: |
+        TIMESTAMP=$(date -u +"%Y%m%d_%H%M%S")
+        
+        # Get list of processed files for the email
+        PROCESSED_FILES=$(ls input_files/ | grep -E "art.*in|atk.*in|mvm.*in|uic.*in|stc.*in" | tr '\n' ',' | sed 's/,$//')
+        
         cat > email_body.txt << EOF
-        Subject: Files Exported Successfully
-        
-        The files have been exported successfully.
-        
-        Input files have been processed and moved to:
-        /katanaPIM/dropfiles/input_files/processed/input_files_$(date -u +"%Y%m%d_%H%M%S")
-        
-        Output files are available at:
-        /katanaPIM/dropfiles/output_files/
-        
-        Previous output files have been archived to:
-        /katanaPIM/dropfiles/output_files/processed/output_files_$(date -u +"%Y%m%d_%H%M%S")
-        
-        The conversion process completed at: $(date)
-        EOF
+Subject: 🚀 KatanaPIM Export Completed - $TIMESTAMP
+
+Hello,
+
+Your file conversion has been completed successfully!
+
+📊 PROCESSING SUMMARY:
+• Input files processed: $PROCESSED_FILES
+• Process completed: $(date)
+• Archive timestamp: ${TIMESTAMP}
+
+📁 FILE LOCATIONS:
+
+📍 CURRENT OUTPUT FILES (Ready for Import):
+https://img.leenweb.app/katanaPIM/dropfiles/output_files/
+
+📍 ARCHIVED INPUT FILES:
+/input_files/processed/input_files_${TIMESTAMP}/
+
+📍 ARCHIVED PREVIOUS OUTPUT FILES: 
+/output_files/processed/output_files_${TIMESTAMP}/
+
+🔗 IMPORT INSTRUCTIONS:
+1. Access the output files at: https://img.leenweb.app/katanaPIM/dropfiles/output_files/
+2. Import the XLSX files into your PIM system
+3. The files will remain available until you upload new input files
+
+The output files will remain in /output_files/ until you upload new files to /input_files/.
+
+Best regards,
+KatanaPIM Automation System
+EOF
         
         # Send email using curl to Gmail SMTP
-        curl -v --url 'smtps://smtp.gmail.com:465' --ssl-reqd \
+        curl -s --url 'smtps://smtp.gmail.com:465' --ssl-reqd \
           --mail-from '${{ secrets.EMAIL_USER }}' \
           --mail-rcpt 'sajid.mbp@gmail.com' \
           --user "${{ secrets.EMAIL_USER }}:${{ secrets.EMAIL_APP_PASSWORD }}" \
           -T email_body.txt
+        
+        echo "📧 Completion email sent to sajid.mbp@gmail.com"
 
     - name: No new files notification
       if: steps.check-files.outputs.new_files == 'false'
       run: |
-        echo "No new files found on FTP server. Skipping processing."
+        echo "⏭️ No new files found in /input_files/. Skipping processing."
+        echo "Next check in 15 minutes..."

@@ -311,9 +311,13 @@ jobs:
                     return
                 
                 timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
-                archive_folder = f'input_files/processed/input_{timestamp}'
-                
-                # Create archive directory
+                # Ensure /input_files/processed exists
+                try:
+                    ftps.mkd('/input_files/processed')
+                except Exception:
+                    pass  # already exists
+
+                archive_folder = f'/input_files/processed/input_{timestamp}'
                 try:
                     ftps.mkd(archive_folder)
                     print(f'Created archive folder: {archive_folder}')

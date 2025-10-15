@@ -113,7 +113,7 @@ jobs:
         def download_ftp_files(ftps):
             '''Download all files from input_files directory'''
             try:
-                ftps.cwd('/katanaPIM/dropfiles/input_files')
+                ftps.cwd('/input_files')
                 items = ftps.nlst()
                 
                 os.makedirs('input_files', exist_ok=True)

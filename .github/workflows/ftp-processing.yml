@@ -300,7 +300,7 @@ jobs:
         def archive_input_files(ftps):
             '''Archive processed input files'''
             try:
-                ftps.cwd('/katanaPIM/dropfiles/input_files')
+                ftps.cwd('/input_files')
                 items = ftps.nlst()
                 
                 # Filter out processed directory and special entries
@@ -311,7 +311,7 @@ jobs:
                     return
                 
                 timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
-                archive_folder = f'/katanaPIM/dropfiles/input_files/processed/input_{timestamp}'
+                archive_folder = f'input_files/processed/input_{timestamp}'
                 
                 # Create archive directory
                 try:

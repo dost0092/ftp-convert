@@ -50,7 +50,7 @@ jobs:
         def check_input_files(ftps):
             '''Check if there are new files in input_files directory'''
             try:
-                ftps.cwd('/katanaPIM/dropfiles/input_files')
+                ftps.cwd('/input_files')
                 items = ftps.nlst()
                 
                 # Filter out directories and special entries

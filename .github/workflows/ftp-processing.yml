@@ -1,8 +1,9 @@
 name: FTP File Processing
 on:
   schedule:
+    # Check every 15 minutes for new files
     - cron: '*/15 * * * *'
-  workflow_dispatch:
+  workflow_dispatch:  # Allow manual triggering
 
 jobs:
   process-ftp-files:
@@ -19,35 +20,24 @@ jobs:
 
     - name: Install Python dependencies
       run: |
+        python -m pip install --upgrade pip
         pip install requests openpyxl pandas tqdm
 
-    - name: Check for new input files
-      id: check_files
-      env:
-        FTP_HOST: img.leenweb.app
-        FTP_USER: ${{ secrets.FTP_USER }}
-        FTP_PASS: ${{ secrets.FTP_PASS }}
+    - name: Create environment file
       run: |
-        python -c "
-        from ftplib import FTP_TLS
-        ftps = FTP_TLS('$FTP_HOST')
-        ftps.login(user='$FTP_USER', passwd='$FTP_PASS')
-        ftps.prot_p()
-        
-        try:
-            ftps.cwd('/input_files')
-            files = [f for f in ftps.nlst() if f not in ['.', '..', 'processed']]
-            print(f'Found {len(files)} files: {files}')
-            has_files = len(files) > 0
-        except:
-            has_files = False
-            
-        ftps.quit()
-        print('new_files_found=' + str(has_files).lower() >> open('$GITHUB_OUTPUT', 'a'))
-        "
+        cat > .env << EOF
+        EMAIL_USER=${{ secrets.EMAIL_USER }}
+        EMAIL_APP_PASSWORD=${{ secrets.EMAIL_APP_PASSWORD }}
+        FTP_REMOTE_DIR=/input_files
+        FTP_UPLOAD_DIR=/output_files
+        FTP_PROCESSED_DIR=/processed
+        FTP_HOST=img.leenweb.app
+        FTP_USER=${{ secrets.FTP_USER }}
+        FTP_PASS=${{ secrets.FTP_PASS }}
+        EOF
 
-    - name: Download input files
-      if: steps.check_files.outputs.new_files_found == 'true'
+    - name: Check FTP for new input files
+      id: check_ftp
       env:
         FTP_HOST: img.leenweb.app
         FTP_USER: ${{ secrets.FTP_USER }}
@@ -57,61 +47,60 @@ jobs:
         from ftplib import FTP_TLS
         import os
         
-        ftps = FTP_TLS('$FTP_HOST')
-        ftps.login(user='$FTP_USER', passwd='$FTP_PASS')
-        ftps.prot_p()
-        
-        os.makedirs('input_files', exist_ok=True)
-        ftps.cwd('/input_files')
-        
-        for item in ftps.nlst():
-            if item in ['.', '..', 'processed']:
-                continue
+        def check_input_files(ftps):
+            '''Check if there are new files in input_files directory'''
             try:
-                # Try to download as file
-                with open(f'input_files/{item}', 'wb') as f:
-                    ftps.retrbinary(f'RETR {item}', f.write)
-                print(f'Downloaded: {item}')
-            except:
-                print(f'Skipped directory: {item}')
+                ftps.cwd('/input_files')
+                items = ftps.nlst()
+                
+                # Filter out directories and special entries
+                files = []
+                for item in items:
+                    if item in ['.', '..', 'processed']:
+                        continue
+                    try:
+                        ftps.cwd(item)
+                        ftps.cwd('..')
+                        # It's a directory, skip for now
+                    except:
+                        # It's a file
+                        files.append(item)
+                
+                print(f'Found {len(files)} files in input_files: {files}')
+                return len(files) > 0, files
+                
+            except Exception as e:
+                print(f'Error checking input_files: {e}')
+                return False, []
         
-        ftps.quit()
-        "
-
-    - name: Create output directory if needed
-      if: steps.check_files.outputs.new_files_found == 'true'
-      env:
-        FTP_HOST: img.leenweb.app
-        FTP_USER: ${{ secrets.FTP_USER }}
-        FTP_PASS: ${{ secrets.FTP_PASS }}
-      run: |
-        python -c "
-        from ftplib import FTP_TLS
-        
+        # Connect securely to FTP
         ftps = FTP_TLS('$FTP_HOST')
         ftps.login(user='$FTP_USER', passwd='$FTP_PASS')
         ftps.prot_p()
         
-        try:
-            ftps.cwd('/output_files')
-            print('Output directory exists')
-        except:
-            ftps.mkd('/output_files')
-            print('Created output directory')
+        print('✅ Checking for new input files...')
+        
+        has_files, file_list = check_input_files(ftps)
+        
+        if has_files:
+            print('🚨 NEW FILES FOUND - Starting processing...')
+            print('Files:', file_list)
+        else:
+            print('✅ No new files found in input_files')
         
         ftps.quit()
+        
+        # Set output variables
+        if has_files:
+            print('::set-output name=new_files_found::true')
+            print('::set-output name=file_list::' + ','.join(file_list))
+        else:
+            print('::set-output name=new_files_found::false')
+            print('::set-output name=file_list::')
         "
 
-    - name: Run conversion script
-      if: steps.check_files.outputs.new_files_found == 'true'
-      run: |
-        cp -r input_files/* .
-        python convert.py
-        echo "Generated files:"
-        find converted-files -type f
-
-    - name: Upload output files
-      if: steps.check_files.outputs.new_files_found == 'true'
+    - name: Download FTP files
+      if: steps.check_ftp.outputs.new_files_found == 'true'
       env:
         FTP_HOST: img.leenweb.app
         FTP_USER: ${{ secrets.FTP_USER }}
@@ -121,25 +110,51 @@ jobs:
         from ftplib import FTP_TLS
         import os
         
+        def download_ftp_files(ftps):
+            '''Download all files from input_files directory'''
+            try:
+                ftps.cwd('/input_files')
+                items = ftps.nlst()
+                
+                os.makedirs('input_files', exist_ok=True)
+                
+                for item in items:
+                    if item in ['.', '..', 'processed']:
+                        continue
+                    
+                    try:
+                        # Try if it's a directory
+                        ftps.cwd(item)
+                        ftps.cwd('..')
+                        print(f'Skipping directory: {item}')
+                    except:
+                        # It's a file - download it
+                        print(f'Downloading file: {item}')
+                        with open(f'input_files/{item}', 'wb') as f:
+                            ftps.retrbinary(f'RETR {item}', f.write)
+                        
+            except Exception as e:
+                print(f'Error downloading files: {e}')
+        
+        # Connect securely to FTP
         ftps = FTP_TLS('$FTP_HOST')
         ftps.login(user='$FTP_USER', passwd='$FTP_PASS')
         ftps.prot_p()
-        ftps.cwd('/output_files')
         
-        for root, dirs, files in os.walk('converted-files'):
-            for file in files:
-                local_path = os.path.join(root, file)
-                remote_path = os.path.relpath(local_path, 'converted-files')
-                
-                with open(local_path, 'rb') as f:
-                    ftps.storbinary(f'STOR {remote_path}', f)
-                print(f'Uploaded: {remote_path}')
+        print('📥 Downloading input files...')
+        download_ftp_files(ftps)
+        
+        # List downloaded files
+        print('Downloaded files:')
+        if os.path.exists('input_files'):
+            for file in os.listdir('input_files'):
+                print(f'  - {file}')
         
         ftps.quit()
         "
 
-    - name: Archive input files
-      if: steps.check_files.outputs.new_files_found == 'true'
+    - name: Archive existing output files
+      if: steps.check_ftp.outputs.new_files_found == 'true'
       env:
         FTP_HOST: img.leenweb.app
         FTP_USER: ${{ secrets.FTP_USER }}
@@ -149,40 +164,238 @@ jobs:
         from ftplib import FTP_TLS
         from datetime import datetime
         
+        def archive_output_files(ftps):
+            '''Archive existing output files before processing new ones'''
+            try:
+                ftps.cwd('/output_files')
+                items = ftps.nlst()
+                
+                # Filter out processed directory and special entries
+                files_to_archive = [item for item in items if item not in ['.', '..', 'processed']]
+                
+                if not files_to_archive:
+                    print('✅ No existing output files to archive')
+                    return
+                
+                timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+                archive_folder = f'/output_files/processed/output_{timestamp}'
+                
+                # Create archive directory
+                try:
+                    ftps.mkd(archive_folder)
+                    print(f'Created archive folder: {archive_folder}')
+                except Exception as e:
+                    print(f'Archive folder already exists or error: {e}')
+                
+                # Move files to archive
+                for item in files_to_archive:
+                    try:
+                        ftps.rename(
+                            f'//output_files/{item}',
+                            f'{archive_folder}/{item}'
+                        )
+                        print(f'📦 Archived: {item}')
+                    except Exception as e:
+                        print(f'Error archiving {item}: {e}')
+                
+                print(f'✅ Archived {len(files_to_archive)} output files')
+                
+            except Exception as e:
+                print(f'Error in archive_output_files: {e}')
+        
+        # Connect securely to FTP
         ftps = FTP_TLS('$FTP_HOST')
         ftps.login(user='$FTP_USER', passwd='$FTP_PASS')
         ftps.prot_p()
-        ftps.cwd('/input_files')
         
-        # Create processed directory
-        try:
-            ftps.mkd('processed')
-        except:
-            pass
-        
-        timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
-        archive_dir = f'processed/input_{timestamp}'
-        
-        try:
-            ftps.mkd(archive_dir)
-        except:
-            pass
-        
-        # Move files to archive
-        for item in ftps.nlst():
-            if item in ['.', '..', 'processed']:
-                continue
-            try:
-                ftps.rename(item, f'{archive_dir}/{item}')
-                print(f'Archived: {item}')
-            except Exception as e:
-                print(f'Error archiving {item}: {e}')
+        print('📦 Archiving existing output files...')
+        archive_output_files(ftps)
         
         ftps.quit()
         "
 
-    - name: Clean up
+    - name: Run Python conversion script
+      if: steps.check_ftp.outputs.new_files_found == 'true'
+      run: |
+        # Copy input files to current directory for processing
+        cp -r input_files/* .
+        
+        # Run your conversion script (REPLACE WITH YOUR ACTUAL SCRIPT NAME)
+        python convert.py
+        
+        # List generated output files
+        echo "Generated output files:"
+        if [ -d "converted-files" ]; then
+          find converted-files -type f
+        else
+          echo "No converted-files directory found"
+        fi
+
+    - name: Upload output files to FTP
+      if: steps.check_ftp.outputs.new_files_found == 'true'
+      env:
+        FTP_HOST: img.leenweb.app
+        FTP_USER: ${{ secrets.FTP_USER }}
+        FTP_PASS: ${{ secrets.FTP_PASS }}
+      run: |
+        python -c "
+        from ftplib import FTP_TLS
+        import os
+        
+        def upload_output_files(ftps):
+            '''Upload all generated output files to output_files directory'''
+            if not os.path.exists('converted-files'):
+                print('❌ No converted-files directory found')
+                return
+            
+            try:
+                ftps.cwd('/output_files')
+                
+                for root, dirs, files in os.walk('converted-files'):
+                    for file in files:
+                        local_path = os.path.join(root, file)
+                        remote_path = file  # Upload to root of output_files
+                        
+                        # If file is in a subdirectory, create that structure
+                        rel_path = os.path.relpath(local_path, 'converted-files')
+                        if os.path.dirname(rel_path):
+                            remote_dir = os.path.dirname(rel_path)
+                            try:
+                                ftps.mkd(remote_dir)
+                            except:
+                                pass  # Directory already exists
+                            remote_path = rel_path
+                        
+                        print(f'📤 Uploading: {remote_path}')
+                        with open(local_path, 'rb') as f:
+                            ftps.storbinary(f'STOR {remote_path}', f)
+                
+                print('✅ All output files uploaded successfully')
+                
+            except Exception as e:
+                print(f'Error uploading output files: {e}')
+        
+        # Connect securely to FTP
+        ftps = FTP_TLS('$FTP_HOST')
+        ftps.login(user='$FTP_USER', passwd='$FTP_PASS')
+        ftps.prot_p()
+        
+        print('📤 Uploading output files to FTP...')
+        upload_output_files(ftps)
+        
+        ftps.quit()
+        "
+
+    - name: Archive processed input files
+      if: steps.check_ftp.outputs.new_files_found == 'true'
+      env:
+        FTP_HOST: img.leenweb.app
+        FTP_USER: ${{ secrets.FTP_USER }}
+        FTP_PASS: ${{ secrets.FTP_PASS }}
+      run: |
+        python -c "
+        from ftplib import FTP_TLS
+        from datetime import datetime
+        
+        def archive_input_files(ftps):
+            '''Archive processed input files'''
+            try:
+                ftps.cwd('/input_files')
+                items = ftps.nlst()
+                
+                # Filter out processed directory and special entries
+                files_to_archive = [item for item in items if item not in ['.', '..', 'processed']]
+                
+                if not files_to_archive:
+                    print('✅ No input files to archive')
+                    return
+                
+                timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+                archive_folder = f'input_files/processed/input_{timestamp}'
+                
+                # Create archive directory
+                try:
+                    ftps.mkd(archive_folder)
+                    print(f'Created archive folder: {archive_folder}')
+                except Exception as e:
+                    print(f'Archive folder already exists or error: {e}')
+                
+                # Move files to archive
+                for item in files_to_archive:
+                    try:
+                        ftps.rename(
+                            f'/input_files/{item}',
+                            f'{archive_folder}/{item}'
+                        )
+                        print(f'📦 Archived input file: {item}')
+                    except Exception as e:
+                        print(f'Error archiving {item}: {e}')
+                
+                print(f'✅ Archived {len(files_to_archive)} input files')
+                
+            except Exception as e:
+                print(f'Error in archive_input_files: {e}')
+        
+        # Connect securely to FTP
+        ftps = FTP_TLS('$FTP_HOST')
+        ftps.login(user='$FTP_USER', passwd='$FTP_PASS')
+        ftps.prot_p()
+        
+        print('📦 Archiving processed input files...')
+        archive_input_files(ftps)
+        
+        ftps.quit()
+        "
+
+    - name: Send success email notification
+      if: steps.check_ftp.outputs.new_files_found == 'true'
+      uses: dawidd6/action-send-mail@v3
+      with:
+        server_address: smtp.gmail.com
+        server_port: 587
+        username: ${{ secrets.EMAIL_USER }}
+        password: ${{ secrets.EMAIL_APP_PASSWORD }}
+        subject: 'Files are exported - KatanaPIM Processing Complete'
+        to: sajid.mbp@gmail.com
+        from: GitHub Actions
+        body: |
+          The file conversion has been completed successfully!
+          
+          📁 Output files are available at:
+          https://img.leenweb.app/output_files/
+          
+          These files will remain available until the next processing run.
+          
+          Input files have been archived to:
+          /input_files/processed/input_[timestamp]/
+          
+          Previous output files have been archived to:
+          /output_files/processed/output_[timestamp]/
+          
+          Best regards,
+          GitHub Actions Automation
+
+    - name: Send no files notification
+      if: steps.check_ftp.outputs.new_files_found == 'false'
+      uses: dawidd6/action-send-mail@v3
+      with:
+        server_address: smtp.gmail.com
+        server_port: 587
+        username: ${{ secrets.EMAIL_USER }}
+        password: ${{ secrets.EMAIL_APP_PASSWORD }}
+        subject: 'No New Files - KatanaPIM Check'
+        to: sajid.mbp@gmail.com
+        from: GitHub Actions
+        body: |
+          The scheduled check ran but no new files were found in the input directory.
+          
+          Next check will be in 15 minutes.
+          
+          Current output files remain available at:
+          https://img.leenweb.app/output_files/
+
+    - name: Clean up local files
       if: always()
       run: |
         rm -rf input_files converted-files
-        echo '✅ Cleaned up'
+        echo "✅ Local files cleaned up"

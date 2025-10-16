@@ -360,7 +360,7 @@ jobs:
         username: ${{ secrets.EMAIL_USER }}
         password: ${{ secrets.EMAIL_APP_PASSWORD }}
         subject: 'Files are exported - KatanaPIM Processing Complete'
-        to: waqasdostdost0092@gmail.com
+        to: martijn@leenweb.nl
         from: GitHub Actions
         body: |
           The file conversion has been completed successfully!
@@ -388,7 +388,7 @@ jobs:
         username: ${{ secrets.EMAIL_USER }}
         password: ${{ secrets.EMAIL_APP_PASSWORD }}
         subject: 'No New Files - KatanaPIM Check'
-        to: waqasdostdost0092@gmail.com
+        to: martijn@leenweb.nl
         from: GitHub Actions
         body: |
           The scheduled check ran but no new files were found in the input directory.

@@ -360,7 +360,7 @@ jobs:
         username: ${{ secrets.EMAIL_USER }}
         password: ${{ secrets.EMAIL_APP_PASSWORD }}
         subject: 'Files are exported - KatanaPIM Processing Complete'
-        to: sajid.mbp@gmail.com
+        to: waqasdostdost0092@gmail.com
         from: GitHub Actions
         body: |
           The file conversion has been completed successfully!
